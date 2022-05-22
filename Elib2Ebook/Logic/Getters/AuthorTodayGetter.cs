@@ -103,7 +103,7 @@ public class AuthorTodayGetter : GetterBase {
             return;
         }
 
-        var doc = await _config.Client.GetHtmlDocWithTriesAsync(new Uri("https://author.today/"));
+        var doc = await GetHtmlDocument(new Uri("https://author.today/").ReplaceHost(IP));
         var token = doc.QuerySelector("[name=__RequestVerificationToken]")?.Attributes["value"]?.Value;
 
         using var post = await PostAsync(new Uri("https://author.today/account/login").ReplaceHost(IP), GenerateAuthData(token));
@@ -239,6 +239,7 @@ public class AuthorTodayGetter : GetterBase {
     private HttpRequestMessage CreateRequestMessage(Uri uri, HttpContent content = null) {
         var message = new HttpRequestMessage(content == null ? HttpMethod.Get : HttpMethod.Post, uri);
         message.Headers.Add("Host", SystemUrl.Host);
+        message.Content = content;
         return message;
     }
 
