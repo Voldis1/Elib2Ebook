@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text;
@@ -23,6 +22,9 @@ public class AuthorTodayGetter : GetterBase {
 
     protected override Uri SystemUrl => new("https://author.today/");
     
+    // cloudflare :(
+    private const string IP = "185.26.98.227";
+    
     protected override string GetId(Uri url) {
         return url.Segments[2].Trim('/');
     }
@@ -36,11 +38,10 @@ public class AuthorTodayGetter : GetterBase {
     public override async Task<Book> Get(Uri url) {
         var bookId = GetId(url);
 
-        var bookUri = new Uri($"https://author.today/work/{bookId}");
+        var bookUri = new Uri($"https://author.today/work/{bookId}").ReplaceHost(IP);
         Console.WriteLine($"Загружаю книгу {bookUri.ToString().CoverQuotes()}"); 
-        var doc = await _config.Client.GetHtmlDocWithTriesAsync(bookUri);
+        var doc = await GetHtmlDocument(bookUri);
 
-        
         var book = new Book(bookUri) {
             Cover = await GetCover(doc, bookUri),
             Chapters = await FillChapters(bookId, GetUserId(doc)),
@@ -105,7 +106,7 @@ public class AuthorTodayGetter : GetterBase {
         var doc = await _config.Client.GetHtmlDocWithTriesAsync(new Uri("https://author.today/"));
         var token = doc.QuerySelector("[name=__RequestVerificationToken]")?.Attributes["value"]?.Value;
 
-        using var post = await _config.Client.PostAsync(new Uri("https://author.today/account/login"), GenerateAuthData(token));
+        using var post = await PostAsync(new Uri("https://author.today/account/login").ReplaceHost(IP), GenerateAuthData(token));
         var response = await post.Content.ReadFromJsonAsync<ApiResponse<object>>();
             
         if (response?.IsSuccessful == true) {
@@ -132,8 +133,8 @@ public class AuthorTodayGetter : GetterBase {
     /// <param name="bookId">Идентификатор книги</param>
     /// <returns></returns>
     private async Task<List<Chapter>> GetChapters(string bookId) {
-        var bookUri = new Uri($"https://author.today/reader/{bookId}");
-        var doc = await _config.Client.GetHtmlDocWithTriesAsync(bookUri);
+        var bookUri = new Uri($"https://author.today/reader/{bookId}").ReplaceHost(IP);
+        var doc = await GetHtmlDocument(bookUri);
         
         const string START_PATTERN = "chapters:";
         var startIndex = doc.ParsedText.IndexOf(START_PATTERN, StringComparison.Ordinal) + START_PATTERN.Length;
@@ -151,14 +152,10 @@ public class AuthorTodayGetter : GetterBase {
         var chapters = await GetChapters(bookId);
             
         foreach (var chapter in chapters) {
-            var chapterUri = new Uri($"https://author.today/reader/{bookId}/chapter?id={chapter.Id}");
+            var chapterUri = new Uri($"https://author.today/reader/{bookId}/chapter?id={chapter.Id}").ReplaceHost(IP);
                 
             Console.WriteLine($"Получаем главу {chapter.Title.CoverQuotes()}");
-            using var response = await _config.Client.GetWithTriesAsync(chapterUri);
-
-            if (response is not { StatusCode: HttpStatusCode.OK }) {
-                throw new Exception($"Не удалось получить главу {chapter.Title.CoverQuotes()}");
-            }
+            using var response = await GetAsync(chapterUri);
 
             var secret = GetSecret(response, userId);
             if (string.IsNullOrWhiteSpace(secret)) {
@@ -226,5 +223,37 @@ public class AuthorTodayGetter : GetterBase {
         }
 
         return sb.ToString().HtmlDecode();
+    }
+    
+    protected override HttpRequestMessage GetImageRequestMessage(Uri uri) {
+        if (!uri.Host.Contains(SystemUrl.Host) && uri.Host != IP) {
+            return base.GetImageRequestMessage(uri);
+        }
+
+        var replaceHost = uri.Host == SystemUrl.Host ? SystemUrl.Host : uri.Host;
+        var message = new HttpRequestMessage(HttpMethod.Get, uri.ReplaceHost(IP));
+        message.Headers.Add("Host", replaceHost);
+        return message;
+    }
+    
+    private HttpRequestMessage CreateRequestMessage(Uri uri, HttpContent content = null) {
+        var message = new HttpRequestMessage(content == null ? HttpMethod.Get : HttpMethod.Post, uri);
+        message.Headers.Add("Host", SystemUrl.Host);
+        return message;
+    }
+
+    private Task<HttpResponseMessage> GetAsync(Uri uri) {
+        return _config.Client.SendWithTriesAsync(() => CreateRequestMessage(uri));
+    }
+    
+    private Task<HttpResponseMessage> PostAsync(Uri uri, HttpContent content) {
+        return _config.Client.SendWithTriesAsync(() => CreateRequestMessage(uri, content));
+    }
+
+    private async Task<HtmlDocument> GetHtmlDocument(Uri uri) {
+        var response = await GetAsync(uri);
+        var content = await response.Content.ReadAsStringAsync();
+            
+        return content.AsHtmlDoc();
     }
 }
